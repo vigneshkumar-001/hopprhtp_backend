@@ -10,9 +10,31 @@ const phone = z
 
 export const updateProfileSchema = z
   .object({
+    accountType: z.enum(['individual', 'company']).optional(),
+    firstName: z.string().trim().min(1).max(60).optional(),
+    middleName: z.string().trim().max(60).optional(),
+    lastName: z.string().trim().min(1).max(60).optional(),
     fullName: z.string().trim().min(2).max(80).optional(),
     phone: phone.optional(),
+    phoneCountry: z.string().trim().max(4).optional(), // ISO-2
     email: z.string().trim().email().optional(),
+    dob: z
+      .object({
+        day: z.coerce.number().int().min(1).max(31),
+        month: z.coerce.number().int().min(1).max(12),
+        year: z.coerce.number().int().min(1900).max(new Date().getFullYear()),
+      })
+      .optional(),
+    address: z
+      .object({
+        line1: z.string().trim().max(120).optional(),
+        line2: z.string().trim().max(120).optional(),
+        city: z.string().trim().max(80).optional(),
+        state: z.string().trim().max(80).optional(),
+        postalCode: z.string().trim().max(20).optional(),
+        country: z.string().trim().max(80).optional(),
+      })
+      .optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'No fields to update' });
 
@@ -28,7 +50,9 @@ export const addPayoutAccountSchema = z.object({
 
 export const identityVerifySchema = z.object({
   docType: z.enum(['nin', 'drivers_license', 'passport']),
-  documentUrl: z.string().url(),
+  documentFrontUrl: z.string().url(),
+  // Single-sided documents (e.g. passport data page) may omit the back.
+  documentBackUrl: z.string().url().optional(),
   selfieUrl: z.string().url(),
 });
 

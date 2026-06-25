@@ -14,6 +14,16 @@ export const authController = {
     res.status(201).json(ok({ user: user.toJSON(), ...tokens }));
   },
 
+  async resendOtp(req: Request, res: Response) {
+    const result = await authService.resendRegisterOtp(req.body.phone);
+    res.json(ok({ message: 'Verification code sent', ...result }));
+  },
+
+  async verifyOtp(req: Request, res: Response) {
+    const { phone, otp } = req.body as { phone: string; otp: string };
+    res.json(ok(await authService.verifyRegisterOtp(phone, otp)));
+  },
+
   async login(req: Request, res: Response) {
     const { user, tokens } = await authService.login(req.body);
     res.json(ok({ user: user.toJSON(), ...tokens }));
@@ -28,5 +38,17 @@ export const authController = {
     if (!req.auth) throw Unauthorized();
     await authService.logoutAll(req.auth.sub);
     res.json(ok({ message: 'Signed out of all devices' }));
+  },
+
+  async changePin(req: Request, res: Response) {
+    if (!req.auth) throw Unauthorized();
+    await authService.changePin(req.auth.sub, req.body.currentPin, req.body.newPin);
+    res.json(ok({ message: 'PIN updated' }));
+  },
+
+  async verifyPin(req: Request, res: Response) {
+    if (!req.auth) throw Unauthorized();
+    await authService.verifyPin(req.auth.sub, req.body.pin);
+    res.json(ok({ valid: true }));
   },
 };

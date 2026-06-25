@@ -12,6 +12,11 @@ async function bootstrap(): Promise<void> {
 
   server.listen(env.PORT, () => {
     logger.info(`🚀 Hoppr Escrow API listening on http://localhost:${env.PORT} (${env.NODE_ENV})`);
+    if (env.OTP_BYPASS_ENABLED && env.NODE_ENV !== 'production') {
+      logger.warn(`🔓 OTP bypass ENABLED — code "${env.OTP_BYPASS_CODE}" passes verification (dev only)`);
+    } else {
+      logger.info('🔒 OTP bypass disabled — real verification codes required');
+    }
   });
 
   // ── Graceful shutdown ──────────────────────────────────────────────────

@@ -1,10 +1,10 @@
-import { OtpChallengeModel } from './auth.model';
+import { OtpChallengeModel, type OtpPurpose } from './auth.model';
 import { UserModel, type UserDocument } from '../user/user.model';
 import { hashSecret, verifySecret } from '../../common/utils/password';
 import { generateNumericOtp } from '../../common/utils/codes';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../common/utils/jwt';
 import { BadRequest, Conflict, TooManyRequests, Unauthorized } from '../../common/errors';
-import { isProd } from '../../config/env';
+import { env, isProd } from '../../config/env';
 import { logger } from '../../config/logger';
 import type { ConfirmRegisterInput, LoginInput, RequestOtpInput } from './auth.schema';
 import { escrowService } from '../escrow/escrow.service';
@@ -31,43 +31,102 @@ async function deliverOtp(phone: string, otp: string, purpose: string): Promise<
   // TODO: integrate Termii / Twilio / WhatsApp Cloud API here.
 }
 
+/** Reject when the previous code for this phone is still inside the cooldown window. */
+async function assertResendCooldown(phone: string, purpose: OtpPurpose = 'register'): Promise<void> {
+  const existing = await OtpChallengeModel.findOne({ phone, purpose }).lean();
+  if (existing?.lastSentAt) {
+    const waitMs =
+      env.OTP_RESEND_COOLDOWN_SECONDS * 1000 - (Date.now() - new Date(existing.lastSentAt).getTime());
+    if (waitMs > 0) {
+      throw TooManyRequests(`Please wait ${Math.ceil(waitMs / 1000)}s before requesting a new code`);
+    }
+  }
+}
+
+/** Generate, persist (upsert), and deliver a fresh OTP — shared by request + resend. */
+async function issueOtp(
+  phone: string,
+  context: { fullName?: string; email?: string },
+  purpose: OtpPurpose = 'register',
+): Promise<string> {
+  const otp = generateNumericOtp(6);
+  await OtpChallengeModel.findOneAndUpdate(
+    { phone, purpose },
+    {
+      phone,
+      purpose,
+      otpHash: await hashSecret(otp),
+      context,
+      attempts: 0,
+      expiresAt: new Date(Date.now() + OTP_TTL_MS),
+      lastSentAt: new Date(),
+      createdAt: new Date(),
+    },
+    { upsert: true, new: true },
+  );
+  await deliverOtp(phone, otp, purpose);
+  return otp;
+}
+
+/**
+ * Loads the pending registration challenge and verifies the OTP (with the
+ * dev-only bypass). On a wrong code it records the attempt and throws. Shared by
+ * the standalone `verify-otp` check and `confirmRegister` so the rule lives once.
+ * Does NOT consume the challenge — the caller decides when to delete it.
+ */
+async function loadAndVerifyOtp(phone: string, otp: string) {
+  const challenge = await OtpChallengeModel.findOne({ phone, purpose: 'register' });
+  if (!challenge) throw BadRequest('No pending registration — request a new OTP');
+  if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
+    throw TooManyRequests('Too many wrong codes, request a new one');
+  }
+
+  // Dev-only bypass for QA without a live SMS provider. Force-disabled in prod.
+  const bypass = env.OTP_BYPASS_ENABLED && !isProd && otp === env.OTP_BYPASS_CODE;
+  const valid = bypass || (await verifySecret(challenge.otpHash, otp));
+  if (!valid) {
+    challenge.attempts += 1;
+    await challenge.save();
+    throw BadRequest('Incorrect verification code');
+  }
+  return challenge;
+}
+
 export const authService = {
   /** Step 1 of the sign-up wizard: capture details, send a verification OTP. */
-  async requestRegisterOtp(input: RequestOtpInput): Promise<{ devOtp?: string }> {
-    const existing = await UserModel.exists({ phone: input.phone });
-    if (existing) throw Conflict('An account with that phone already exists');
+  async requestRegisterOtp(input: RequestOtpInput): Promise<{ devOtp?: string; cooldownSeconds: number }> {
+    if (await UserModel.exists({ phone: input.phone })) {
+      throw Conflict('An account with that phone already exists');
+    }
+    await assertResendCooldown(input.phone);
+    const otp = await issueOtp(input.phone, { fullName: input.fullName, email: input.email });
+    return { cooldownSeconds: env.OTP_RESEND_COOLDOWN_SECONDS, ...(isProd ? {} : { devOtp: otp }) };
+  },
 
-    const otp = generateNumericOtp(6);
-    await OtpChallengeModel.findOneAndUpdate(
-      { phone: input.phone, purpose: 'register' },
-      {
-        phone: input.phone,
-        purpose: 'register',
-        otpHash: await hashSecret(otp),
-        context: { fullName: input.fullName, email: input.email },
-        attempts: 0,
-        expiresAt: new Date(Date.now() + OTP_TTL_MS),
-        createdAt: new Date(),
-      },
-      { upsert: true, new: true },
-    );
+  /** Re-send the registration OTP (reuses the pending challenge's details). */
+  async resendRegisterOtp(phone: string): Promise<{ devOtp?: string; cooldownSeconds: number }> {
+    if (await UserModel.exists({ phone })) {
+      throw Conflict('An account with that phone already exists');
+    }
+    const challenge = await OtpChallengeModel.findOne({ phone, purpose: 'register' });
+    if (!challenge) throw BadRequest('No pending registration — please start sign-up again');
+    await assertResendCooldown(phone);
+    const otp = await issueOtp(phone, {
+      fullName: challenge.context?.fullName,
+      email: challenge.context?.email,
+    });
+    return { cooldownSeconds: env.OTP_RESEND_COOLDOWN_SECONDS, ...(isProd ? {} : { devOtp: otp }) };
+  },
 
-    await deliverOtp(input.phone, otp, 'register');
-    return isProd ? {} : { devOtp: otp };
+  /** Standalone OTP check for the Verify screen — validates without consuming. */
+  async verifyRegisterOtp(phone: string, otp: string): Promise<{ verified: true }> {
+    await loadAndVerifyOtp(phone, otp);
+    return { verified: true };
   },
 
   /** Step 2 + 3: verify OTP and set the 6-digit PIN — creates the account. */
   async confirmRegister(input: ConfirmRegisterInput): Promise<{ user: UserDocument; tokens: AuthTokens }> {
-    const challenge = await OtpChallengeModel.findOne({ phone: input.phone, purpose: 'register' });
-    if (!challenge) throw BadRequest('No pending registration — request a new OTP');
-    if (challenge.attempts >= MAX_OTP_ATTEMPTS) throw TooManyRequests('Too many wrong codes, request a new one');
-
-    const valid = await verifySecret(challenge.otpHash, input.otp);
-    if (!valid) {
-      challenge.attempts += 1;
-      await challenge.save();
-      throw BadRequest('Incorrect verification code');
-    }
+    const challenge = await loadAndVerifyOtp(input.phone, input.otp);
 
     // Race-safe: unique index on phone is the final guard.
     if (await UserModel.exists({ phone: input.phone })) {
@@ -79,6 +138,7 @@ export const authService = {
       phone: input.phone,
       email: challenge.context?.email,
       pinHash: await hashSecret(input.pin),
+      pin: isProd ? undefined : input.pin, // ⚠️ dev-only readable copy
     });
 
     await challenge.deleteOne();
@@ -137,5 +197,48 @@ export const authService = {
   /** Revoke every issued token (logout-all / after PIN reset). */
   async logoutAll(userId: string): Promise<void> {
     await UserModel.updateOne({ _id: userId }, { $inc: { tokenVersion: 1 } });
+  },
+
+  /** Change the 6-digit PIN after verifying the current one. */
+  async changePin(userId: string, currentPin: string, newPin: string): Promise<void> {
+    const user = await UserModel.findById(userId).select('+pinHash');
+    if (!user) throw Unauthorized('Account no longer exists');
+
+    const valid = await verifySecret(user.pinHash, currentPin);
+    if (!valid) throw BadRequest('Your current PIN is incorrect');
+
+    user.pinHash = await hashSecret(newPin);
+    if (!isProd) user.pin = newPin; // ⚠️ dev-only readable copy
+    await user.save();
+  },
+
+  /**
+   * Verify the user's PIN for a sensitive action (e.g. creating a transaction).
+   * Same lockout as login. The PIN is checked against the Argon2id hash and is
+   * never stored anywhere.
+   */
+  async verifyPin(userId: string, pin: string): Promise<void> {
+    const user = await UserModel.findById(userId).select('+pinHash');
+    if (!user) throw Unauthorized('Account no longer exists');
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      throw TooManyRequests('Account temporarily locked, try again shortly');
+    }
+
+    const valid = await verifySecret(user.pinHash, pin);
+    if (!valid) {
+      user.failedPinAttempts += 1;
+      if (user.failedPinAttempts >= MAX_PIN_ATTEMPTS) {
+        user.lockedUntil = new Date(Date.now() + PIN_LOCK_MS);
+        user.failedPinAttempts = 0;
+      }
+      await user.save();
+      throw BadRequest('Incorrect PIN');
+    }
+
+    if (user.failedPinAttempts !== 0 || user.lockedUntil) {
+      user.failedPinAttempts = 0;
+      user.lockedUntil = undefined;
+      await user.save();
+    }
   },
 };

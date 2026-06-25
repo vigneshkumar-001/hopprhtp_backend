@@ -4,6 +4,22 @@ export type Role = 'user' | 'admin';
 export type UserStatus = 'active' | 'suspended';
 export type IdentityStatus = 'unverified' | 'pending' | 'verified' | 'rejected';
 export type IdDocType = 'nin' | 'drivers_license' | 'passport';
+export type AccountType = 'individual' | 'company';
+
+export interface DateOfBirth {
+  day: number;
+  month: number;
+  year: number;
+}
+
+export interface Address {
+  line1?: string;
+  line2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+}
 
 /** A saved bank account a seller receives settlements into. */
 export interface PayoutAccount {
@@ -20,7 +36,8 @@ export interface PayoutAccount {
 export interface IdentityVerification {
   status: IdentityStatus;
   docType?: IdDocType;
-  documentUrl?: string;
+  documentFrontUrl?: string;
+  documentBackUrl?: string;
   selfieUrl?: string;
   reviewedAt?: Date;
   rejectionReason?: string;
@@ -39,8 +56,18 @@ export interface UserDoc {
   phone: string;
   email?: string;
   pinHash: string;
+  pin?: string; // ⚠️ DEV-ONLY plaintext PIN for debugging — never set in production
   role: Role;
   status: UserStatus;
+
+  // Extended profile (Edit Profile screen).
+  accountType: AccountType;
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  dob?: DateOfBirth;
+  phoneCountry?: string; // ISO-3166 alpha-2 of the phone's country
+  address?: Address;
 
   // Trust metrics surfaced on the profile / merchant screens.
   trustScore: number; // 0..100
@@ -92,8 +119,26 @@ const UserSchema = new Schema<UserDoc>(
     phone: { type: String, required: true, unique: true, trim: true },
     email: { type: String, trim: true, lowercase: true, sparse: true, unique: true },
     pinHash: { type: String, required: true, select: false },
+    // ⚠️ DEV-ONLY readable PIN. Only written when NODE_ENV !== 'production'
+    // (see auth.service). Hidden from API responses via the toJSON transform.
+    pin: { type: String, select: false },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     status: { type: String, enum: ['active', 'suspended'], default: 'active' },
+
+    accountType: { type: String, enum: ['individual', 'company'], default: 'individual' },
+    firstName: { type: String, trim: true },
+    middleName: { type: String, trim: true },
+    lastName: { type: String, trim: true },
+    dob: { day: Number, month: Number, year: Number },
+    phoneCountry: { type: String, trim: true },
+    address: {
+      line1: { type: String, trim: true },
+      line2: { type: String, trim: true },
+      city: { type: String, trim: true },
+      state: { type: String, trim: true },
+      postalCode: { type: String, trim: true },
+      country: { type: String, trim: true },
+    },
 
     trustScore: { type: Number, default: 80, min: 0, max: 100 },
     trustGrade: { type: String, default: 'A' },
@@ -103,7 +148,8 @@ const UserSchema = new Schema<UserDoc>(
     identity: {
       status: { type: String, enum: ['unverified', 'pending', 'verified', 'rejected'], default: 'unverified' },
       docType: { type: String, enum: ['nin', 'drivers_license', 'passport'] },
-      documentUrl: String,
+      documentFrontUrl: String,
+      documentBackUrl: String,
       selfieUrl: String,
       reviewedAt: Date,
       rejectionReason: String,
@@ -126,6 +172,7 @@ const UserSchema = new Schema<UserDoc>(
       virtuals: true,
       transform(_doc, ret) {
         delete (ret as Record<string, unknown>).pinHash;
+        delete (ret as Record<string, unknown>).pin; // never leak the plaintext PIN over the API
         delete (ret as Record<string, unknown>).__v;
         return ret;
       },

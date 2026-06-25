@@ -9,6 +9,7 @@ export interface OtpChallengeDoc {
   context?: { fullName?: string; email?: string }; // carried through registration
   attempts: number;
   expiresAt: Date;
+  lastSentAt?: Date; // throttles resend (cooldown)
   createdAt: Date;
 }
 
@@ -24,6 +25,7 @@ const OtpChallengeSchema = new Schema<OtpChallengeDoc>(
     attempts: { type: Number, default: 0 },
     // TTL index — Mongo auto-deletes the challenge once it expires.
     expiresAt: { type: Date, required: true, index: { expires: 0 } },
+    lastSentAt: Date,
     createdAt: { type: Date, default: Date.now },
   },
   { versionKey: false },

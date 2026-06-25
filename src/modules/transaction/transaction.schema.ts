@@ -12,7 +12,7 @@ const consignment = z.object({
   product: z.string().trim().min(1).max(120),
   amountNaira: z.number().positive().max(1_000_000_000),
   buyerContact: z.string().trim().min(3).max(120),
-  payout,
+  payout: payout.optional(),
   dispatchPhotoUrl: z.string().url().optional(),
   waybillImageUrl: z.string().url().optional(),
 });
@@ -32,6 +32,10 @@ export const listQuerySchema = z.object({
   stage: z.enum(['active', 'cooling', 'done']).optional(),
   status: z.string().optional(),
   role: z.enum(['seller', 'buyer']).optional(),
+  // Pagination (used by the infinite-scroll history). When absent, the list
+  // returns up to a single large page (back-compat for the dashboard).
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
 export const shipSchema = z.object({

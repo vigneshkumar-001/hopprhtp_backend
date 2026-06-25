@@ -2,7 +2,9 @@ import { Types } from 'mongoose';
 import {
   TransactionModel,
   stageForStatus,
+  statusesForStage,
   type TransactionDocument,
+  type TxStage,
   type TxStatus,
 } from './transaction.model';
 import { nextStatus, type TxAction } from './transaction.stateMachine';
@@ -20,7 +22,7 @@ export interface CreateConsignmentInput {
   product: string;
   amountKobo: number;
   buyerContact: string;
-  payout: {
+  payout?: {
     dispatcherName: string;
     dispatcherPhone: string;
     bank: string;
@@ -60,8 +62,10 @@ async function loadOwned(
   opts: { role?: 'seller' | 'buyer' | 'any'; withOtp?: boolean } = {},
 ): Promise<TransactionDocument> {
   const role = opts.role ?? 'any';
-  let q = TransactionModel.findById(id);
-  if (opts.withOtp) q = q.select('+delivery.otpHash');
+  // `.select()` mutates the query in place; call it for its side effect rather
+  // than reassigning (the returned query type differs under NodeNext resolution).
+  const q = TransactionModel.findById(id);
+  if (opts.withOtp) q.select('+delivery.otpHash');
   const tx = await q.exec();
   if (!tx) throw NotFound('Transaction not found');
 
@@ -106,14 +110,16 @@ export const transactionService = {
         product: c.product,
         amountKobo: c.amountKobo,
         buyerContact: c.buyerContact,
-        payout: {
-          dispatcherName: c.payout.dispatcherName,
-          dispatcherPhone: c.payout.dispatcherPhone,
-          bank: c.payout.bank,
-          accountNumberLast4: c.payout.accountNumber.slice(-4),
-          // NOTE: encrypt c.payout.accountNumber at rest before going live.
-          accountName: c.payout.accountName,
-        },
+        payout: c.payout
+          ? {
+              dispatcherName: c.payout.dispatcherName,
+              dispatcherPhone: c.payout.dispatcherPhone,
+              bank: c.payout.bank,
+              accountNumberLast4: c.payout.accountNumber.slice(-4),
+              // NOTE: encrypt c.payout.accountNumber at rest before going live.
+              accountName: c.payout.accountName,
+            }
+          : undefined,
         dispatchPhotoUrl: c.dispatchPhotoUrl,
         waybillImageUrl: c.waybillImageUrl,
       })),
@@ -164,7 +170,16 @@ export const transactionService = {
     return tx;
   },
 
-  async list(userId: string, filters: { stage?: string; status?: TxStatus; role?: 'seller' | 'buyer' }) {
+  async list(
+    userId: string,
+    filters: {
+      stage?: TxStage;
+      status?: TxStatus;
+      role?: 'seller' | 'buyer';
+      page?: number;
+      limit?: number;
+    },
+  ) {
     const party =
       filters.role === 'seller'
         ? { sellerId: userId }
@@ -173,13 +188,22 @@ export const transactionService = {
           : { $or: [{ sellerId: userId }, { buyerId: userId }] };
 
     const query: Record<string, unknown> = { ...party };
+    // Filter by stage at the DB level (via its status set) so paging is exact.
     if (filters.status) query.status = filters.status;
+    else if (filters.stage) query.status = { $in: statusesForStage(filters.stage) };
 
-    const docs = await TransactionModel.find(query).sort({ createdAt: -1 }).limit(200).lean();
+    const page = Math.max(1, filters.page ?? 1);
+    const limit = filters.limit ? Math.min(100, Math.max(1, filters.limit)) : 200;
+    const skip = (page - 1) * limit;
+
+    const [total, docs] = await Promise.all([
+      TransactionModel.countDocuments(query),
+      TransactionModel.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    ]);
+
     // `stage` is a virtual — lean() skips it, so derive it explicitly here.
-    let txs = docs.map((t) => ({ ...t, stage: stageForStatus(t.status) }));
-    if (filters.stage) txs = txs.filter((t) => t.stage === filters.stage);
-    return txs;
+    const items = docs.map((t) => ({ ...t, stage: stageForStatus(t.status) }));
+    return { items, page, limit, total, hasMore: skip + docs.length < total };
   },
 
   async getByCode(code: string) {
@@ -228,7 +252,7 @@ export const transactionService = {
     });
 
     await tx.save();
-    logger.info({ code: tx.code, dispatcher: tx.consignments[0]?.payout.dispatcherPhone }, 'delivery OTP issued');
+    logger.info({ code: tx.code, dispatcher: tx.consignments[0]?.payout?.dispatcherPhone }, 'delivery OTP issued');
     return { tx, devOtp: isProd ? undefined : otp };
   },
 
@@ -311,7 +335,7 @@ export const transactionService = {
       amountKobo: -tx.deliveryFeeKobo,
       bucket: 'escrow',
       transactionId: tx.id,
-      description: `Delivery fee released to ${tx.consignments[0]?.payout.dispatcherName ?? 'dispatcher'}`,
+      description: `Delivery fee released to ${tx.consignments[0]?.payout?.dispatcherName ?? 'dispatcher'}`,
     });
 
     // Item value (net of Hoppr's trust share) → seller cooling bucket.
@@ -388,6 +412,51 @@ export const transactionService = {
     tx.status = applyTransition('cancel', tx.status, tx);
     tx.pushEvent('cancelled', { reason });
     await escrowService.action(tx.escrowTransactionId, 'cancel', reason ? { reason } : {});
+    await tx.save();
+    return tx;
+  },
+
+  /**
+   * Public hosted-checkout payment by code (the buyer pays from the link, no
+   * account). Moves agreement → funded, locks the item value into the seller's
+   * escrow bucket and issues the delivery OTP. Idempotent once paid. In a real
+   * deployment the actual card charge is done by a gateway/webhook; this records
+   * the escrow funding once payment succeeds.
+   */
+  async payByCode(code: string): Promise<TransactionDocument> {
+    const tx = await TransactionModel.findOne({ code: code.trim().toUpperCase() }).select(
+      '+delivery.otpHash',
+    );
+    if (!tx) throw NotFound('No transaction with that code');
+
+    const paidStatuses: TxStatus[] = [
+      'payment_received', 'awaiting_dispatch', 'in_transit', 'out_for_delivery',
+      'delivered', 'cooling', 'released', 'completed',
+    ];
+    if (paidStatuses.includes(tx.status)) return tx; // already paid — idempotent
+
+    if (tx.status === 'draft' || tx.status === 'awaiting_agreement') {
+      tx.status = applyTransition('agree', tx.status, tx);
+    }
+    if (tx.status !== 'awaiting_payment') {
+      throw BadRequest('This transaction can no longer be paid');
+    }
+
+    tx.status = applyTransition('fund', tx.status, tx);
+    const otp = generateNumericOtp(6);
+    tx.delivery.otpHash = await hashSecret(otp);
+    tx.delivery.otpExpiresAt = new Date(Date.now() + env.DELIVERY_OTP_TTL_DAYS * 86400_000);
+    tx.pushEvent('escrow_funded', { amountKobo: tx.grandTotalKobo });
+
+    await walletService.move({
+      userId: tx.sellerId.toString(),
+      type: 'escrow_funded',
+      amountKobo: tx.itemSubtotalKobo,
+      bucket: 'escrow',
+      transactionId: tx.id,
+      description: `Escrow funded for ${tx.code}`,
+    });
+
     await tx.save();
     return tx;
   },

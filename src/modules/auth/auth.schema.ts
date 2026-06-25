@@ -24,10 +24,21 @@ export const requestOtpSchema = z.object({
 });
 
 export const confirmRegisterSchema = z.object({
-  phone, 
+  phone,
   otp,
   pin,
 });
+
+export const resendOtpSchema = z.object({ phone });
+export const verifyOtpSchema = z.object({ phone, otp });
+export const verifyPinSchema = z.object({ pin });
+
+export const changePinSchema = z
+  .object({ currentPin: pin, newPin: pin })
+  .refine((v) => v.currentPin !== v.newPin, {
+    message: 'New PIN must be different from the current one',
+    path: ['newPin'],
+  });
 
 export const loginSchema = z.object({
   // identifier = phone OR email

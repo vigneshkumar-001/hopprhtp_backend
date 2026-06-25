@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authGuard } from '../../common/middleware/authGuard';
+import { pinGuard } from '../../common/middleware/pinGuard';
 import { validate } from '../../common/middleware/validate';
 import { asyncHandler } from '../../common/http/asyncHandler';
 import { transactionController } from './transaction.controller';
@@ -16,7 +17,8 @@ import {
 const router = Router();
 router.use(authGuard);
 
-router.post('/', validate({ body: createTransactionSchema }), asyncHandler(transactionController.create));
+// Creating a transaction requires the user's PIN (verified, never stored).
+router.post('/', pinGuard, validate({ body: createTransactionSchema }), asyncHandler(transactionController.create));
 router.get('/', validate({ query: listQuerySchema }), asyncHandler(transactionController.list));
 
 // Lookup by public code (Enter Transaction Code screen) — must precede /:id.

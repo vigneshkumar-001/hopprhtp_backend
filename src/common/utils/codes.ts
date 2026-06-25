@@ -20,6 +20,10 @@ export const generateTransactionCode = (): string =>
 export const generateDisputeCode = (): string =>
   `DSP-${randomFrom(ALPHABET, 4)}`;
 
+/** Public support ticket id, e.g. `SUP-4F9M`. */
+export const generateSupportCode = (): string =>
+  `SUP-${randomFrom(ALPHABET, 4)}`;
+
 /** Numeric delivery OTP (default 6 digits) delivered to the dispatcher. */
 export function generateNumericOtp(length = 6): string {
   let out = '';

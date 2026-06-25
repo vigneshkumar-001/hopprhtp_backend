@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { transactionService } from './transaction.service';
+import { notificationService } from '../notification/notification.service';
 import { ok } from '../../common/types';
 import { Unauthorized } from '../../common/errors';
 import { nairaToKobo } from '../../common/utils/money';
@@ -35,13 +36,21 @@ export const transactionController = {
   },
 
   async list(req: Request, res: Response) {
-    const { stage, status, role } = req.query as unknown as {
+    const { stage, status, role, page, limit } = req.query as unknown as {
       stage?: 'active' | 'cooling' | 'done';
       status?: TxStatus;
       role?: 'seller' | 'buyer';
+      page?: number;
+      limit?: number;
     };
-    const txs = await transactionService.list(uid(req), { stage, status, role });
-    res.json(ok(txs));
+    const result = await transactionService.list(uid(req), {
+      stage,
+      status,
+      role,
+      page,
+      limit,
+    });
+    res.json(ok(result));
   },
 
   async getByCode(req: Request, res: Response) {
@@ -59,17 +68,46 @@ export const transactionController = {
 
   async fund(req: Request, res: Response) {
     const { tx, devOtp } = await transactionService.fund(req.params.id as string, uid(req));
+    // Buyer just funded → tell the seller their escrow is secured.
+    await notificationService.emit({
+      userId: tx.sellerId.toString(),
+      type: 'payment',
+      title: 'Payment received',
+      body: `${tx.code} · funds are now secured in escrow`,
+      transactionId: tx.id,
+      code: tx.code,
+    });
     res.json(ok({ transaction: tx.toJSON(), ...(devOtp ? { devOtp } : {}) }));
   },
 
   async ship(req: Request, res: Response) {
     const { carrier, trackingNumber } = req.body as { carrier?: string; trackingNumber?: string };
     const tx = await transactionService.ship(req.params.id as string, uid(req), carrier, trackingNumber);
+    if (tx.buyerId) {
+      await notificationService.emit({
+        userId: tx.buyerId.toString(),
+        type: 'delivery',
+        title: 'On its way',
+        body: `${tx.code} · your order has been dispatched`,
+        transactionId: tx.id,
+        code: tx.code,
+      });
+    }
     res.json(ok(tx.toJSON()));
   },
 
   async outForDelivery(req: Request, res: Response) {
     const tx = await transactionService.markOutForDelivery(req.params.id as string, uid(req));
+    if (tx.buyerId) {
+      await notificationService.emit({
+        userId: tx.buyerId.toString(),
+        type: 'delivery',
+        title: 'Out for delivery',
+        body: `${tx.code} · the dispatcher is on the way to you`,
+        transactionId: tx.id,
+        code: tx.code,
+      });
+    }
     res.json(ok(tx.toJSON()));
   },
 
@@ -77,11 +115,28 @@ export const transactionController = {
     const { otp, lat, lng } = req.body as { otp: string; lat?: number; lng?: number };
     const location = lat != null && lng != null ? { lat, lng } : undefined;
     const tx = await transactionService.confirmDelivery(req.params.id as string, uid(req), otp, location);
+    // Delivery confirmed → tell the seller the cooling period has started.
+    await notificationService.emit({
+      userId: tx.sellerId.toString(),
+      type: 'delivery',
+      title: 'Delivery confirmed',
+      body: `${tx.code} · cooling period started`,
+      transactionId: tx.id,
+      code: tx.code,
+    });
     res.json(ok(tx.toJSON()));
   },
 
   async release(req: Request, res: Response) {
     const tx = await transactionService.release(req.params.id as string, uid(req));
+    await notificationService.emit({
+      userId: tx.sellerId.toString(),
+      type: 'payout',
+      title: 'Funds released',
+      body: `${tx.code} · the escrow has been released to you`,
+      transactionId: tx.id,
+      code: tx.code,
+    });
     res.json(ok(tx.toJSON()));
   },
 

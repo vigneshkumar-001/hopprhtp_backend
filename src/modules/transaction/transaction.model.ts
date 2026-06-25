@@ -45,6 +45,12 @@ export function stageForStatus(status: TxStatus): TxStage {
   }
 }
 
+/** Reverse of [stageForStatus] — the statuses that fall under a home-tab stage.
+ *  Lets the list query filter by stage at the DB level (so pagination is exact). */
+export function statusesForStage(stage: TxStage): TxStatus[] {
+  return TX_STATUSES.filter((s) => stageForStatus(s) === stage);
+}
+
 export interface CourierPayoutSub {
   dispatcherName: string;
   dispatcherPhone: string;
@@ -58,7 +64,7 @@ export interface ConsignmentSub {
   product: string;
   amountKobo: number;
   buyerContact: string;
-  payout: CourierPayoutSub;
+  payout?: CourierPayoutSub;
   dispatchPhotoUrl?: string;
   waybillImageUrl?: string;
 }
@@ -151,7 +157,7 @@ const ConsignmentSchema = new Schema<ConsignmentSub>(
     product: { type: String, required: true },
     amountKobo: { type: Number, required: true, min: 0 },
     buyerContact: { type: String, required: true },
-    payout: { type: PayoutSchema, required: true },
+    payout: { type: PayoutSchema, required: false },
     dispatchPhotoUrl: String,
     waybillImageUrl: String,
   },
@@ -221,7 +227,9 @@ const TransactionSchema = new Schema<
       virtuals: true,
       transform(_doc, ret) {
         delete (ret as Record<string, unknown>).__v;
-        if (ret.delivery) delete (ret.delivery as Record<string, unknown>).otpHash;
+        if (ret.delivery) {
+          delete (ret.delivery as unknown as Record<string, unknown>).otpHash;
+        }
         return ret;
       },
     },

@@ -28,6 +28,24 @@ export const userService = {
     }
     if (input.fullName) user.fullName = input.fullName;
 
+    // Extended profile fields.
+    if (input.accountType) user.accountType = input.accountType;
+    if (input.firstName !== undefined) user.firstName = input.firstName;
+    if (input.middleName !== undefined) user.middleName = input.middleName;
+    if (input.lastName !== undefined) user.lastName = input.lastName;
+    if (input.phoneCountry !== undefined) user.phoneCountry = input.phoneCountry;
+    if (input.dob) user.dob = input.dob;
+    if (input.address) user.address = { ...(user.address ?? {}), ...input.address };
+
+    // Keep the single fullName in sync with the structured name when supplied.
+    if (input.firstName || input.lastName) {
+      const composed = [user.firstName, user.middleName, user.lastName]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      if (composed) user.fullName = composed;
+    }
+
     await user.save();
     return user;
   },
@@ -74,7 +92,8 @@ export const userService = {
     user.identity = {
       status: 'pending',
       docType: input.docType,
-      documentUrl: input.documentUrl,
+      documentFrontUrl: input.documentFrontUrl,
+      documentBackUrl: input.documentBackUrl,
       selfieUrl: input.selfieUrl,
     };
     await user.save();

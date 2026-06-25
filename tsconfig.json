@@ -1,8 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "CommonJS",
-    "moduleResolution": "Node",
+    // NodeNext replaces the deprecated `node` (node10) resolution. The project
+    // has no `"type": "module"`, so files stay CommonJS and extensionless
+    // relative imports keep working — output is unchanged.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "lib": ["ES2022"],
     "outDir": "dist",
     "rootDir": "src",
