@@ -63,8 +63,15 @@ export interface CourierPayoutSub {
 export interface ConsignmentSub {
   product: string;
   amountKobo: number;
+  quantity?: string;
+  weight?: string;
+  buyerName?: string;
   buyerContact: string;
+  deliveryAddress?: string;
+  waybillTrackingNumber?: string;
   payout?: CourierPayoutSub;
+  dispatcherAddress?: string;
+  specialInstructions?: string;
   dispatchPhotoUrl?: string;
   waybillImageUrl?: string;
 }
@@ -156,8 +163,15 @@ const ConsignmentSchema = new Schema<ConsignmentSub>(
   {
     product: { type: String, required: true },
     amountKobo: { type: Number, required: true, min: 0 },
+    quantity: { type: String, trim: true, maxlength: 40 },
+    weight: { type: String, trim: true, maxlength: 40 },
+    buyerName: { type: String, trim: true, maxlength: 120 },
     buyerContact: { type: String, required: true },
+    deliveryAddress: { type: String, trim: true, maxlength: 240 },
+    waybillTrackingNumber: { type: String, trim: true, maxlength: 80 },
     payout: { type: PayoutSchema, required: false },
+    dispatcherAddress: { type: String, trim: true, maxlength: 240 },
+    specialInstructions: { type: String, trim: true, maxlength: 500 },
     dispatchPhotoUrl: String,
     waybillImageUrl: String,
   },

@@ -11,8 +11,15 @@ const payout = z.object({
 const consignment = z.object({
   product: z.string().trim().min(1).max(120),
   amountNaira: z.number().positive().max(1_000_000_000),
+  quantity: z.string().trim().max(40).optional(),
+  weight: z.string().trim().max(40).optional(),
+  buyerName: z.string().trim().max(120).optional(),
   buyerContact: z.string().trim().min(3).max(120),
+  deliveryAddress: z.string().trim().max(240).optional(),
+  waybillTrackingNumber: z.string().trim().max(80).optional(),
   payout: payout.optional(),
+  dispatcherAddress: z.string().trim().max(240).optional(),
+  specialInstructions: z.string().trim().max(500).optional(),
   dispatchPhotoUrl: z.string().url().optional(),
   waybillImageUrl: z.string().url().optional(),
 });

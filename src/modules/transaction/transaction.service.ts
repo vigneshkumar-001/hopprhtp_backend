@@ -21,7 +21,12 @@ import { UserModel } from '../user/user.model';
 export interface CreateConsignmentInput {
   product: string;
   amountKobo: number;
+  quantity?: string;
+  weight?: string;
+  buyerName?: string;
   buyerContact: string;
+  deliveryAddress?: string;
+  waybillTrackingNumber?: string;
   payout?: {
     dispatcherName: string;
     dispatcherPhone: string;
@@ -29,6 +34,8 @@ export interface CreateConsignmentInput {
     accountNumber: string;
     accountName: string;
   };
+  dispatcherAddress?: string;
+  specialInstructions?: string;
   dispatchPhotoUrl?: string;
   waybillImageUrl?: string;
 }
@@ -109,7 +116,12 @@ export const transactionService = {
       consignments: input.consignments.map((c) => ({
         product: c.product,
         amountKobo: c.amountKobo,
+        quantity: c.quantity,
+        weight: c.weight,
+        buyerName: c.buyerName,
         buyerContact: c.buyerContact,
+        deliveryAddress: c.deliveryAddress,
+        waybillTrackingNumber: c.waybillTrackingNumber,
         payout: c.payout
           ? {
               dispatcherName: c.payout.dispatcherName,
@@ -120,6 +132,8 @@ export const transactionService = {
               accountName: c.payout.accountName,
             }
           : undefined,
+        dispatcherAddress: c.dispatcherAddress,
+        specialInstructions: c.specialInstructions,
         dispatchPhotoUrl: c.dispatchPhotoUrl,
         waybillImageUrl: c.waybillImageUrl,
       })),

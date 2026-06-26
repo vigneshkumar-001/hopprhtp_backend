@@ -56,3 +56,4 @@ export const pinResetConfirmSchema = z.object({ phone, otp, newPin: pin });
 export type RequestOtpInput = z.infer<typeof requestOtpSchema>;
 export type ConfirmRegisterInput = z.infer<typeof confirmRegisterSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
+export type PinResetConfirmInput = z.infer<typeof pinResetConfirmSchema>;

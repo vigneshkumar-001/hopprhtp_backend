@@ -13,6 +13,8 @@ import {
   resendOtpSchema,
   verifyOtpSchema,
   verifyPinSchema,
+  pinResetRequestSchema,
+  pinResetConfirmSchema,
 } from './auth.schema';
 
 const router = Router();
@@ -24,6 +26,8 @@ router.post('/resend-otp', authLimiter, validate({ body: resendOtpSchema }), asy
 router.post('/verify-otp', authLimiter, validate({ body: verifyOtpSchema }), asyncHandler(authController.verifyOtp));
 router.post('/login', authLimiter, validate({ body: loginSchema }), asyncHandler(authController.login));
 router.post('/refresh', validate({ body: refreshSchema }), asyncHandler(authController.refresh));
+router.post('/pin-reset/request-otp', authLimiter, validate({ body: pinResetRequestSchema }), asyncHandler(authController.requestPinReset));
+router.post('/pin-reset/confirm', authLimiter, validate({ body: pinResetConfirmSchema }), asyncHandler(authController.confirmPinReset));
 router.post('/logout-all', authGuard, asyncHandler(authController.logoutAll));
 router.post('/change-pin', authGuard, validate({ body: changePinSchema }), asyncHandler(authController.changePin));
 router.post('/verify-pin', authGuard, validate({ body: verifyPinSchema }), asyncHandler(authController.verifyPin));

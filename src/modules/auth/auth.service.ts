@@ -6,7 +6,12 @@ import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../com
 import { BadRequest, Conflict, TooManyRequests, Unauthorized } from '../../common/errors';
 import { env, isProd } from '../../config/env';
 import { logger } from '../../config/logger';
-import type { ConfirmRegisterInput, LoginInput, RequestOtpInput } from './auth.schema';
+import type {
+  ConfirmRegisterInput,
+  LoginInput,
+  PinResetConfirmInput,
+  RequestOtpInput,
+} from './auth.schema';
 import { escrowService } from '../escrow/escrow.service';
 
 const OTP_TTL_MS = 10 * 60_000; // 10 minutes
@@ -74,14 +79,31 @@ async function issueOtp(
  * the standalone `verify-otp` check and `confirmRegister` so the rule lives once.
  * Does NOT consume the challenge — the caller decides when to delete it.
  */
-async function loadAndVerifyOtp(phone: string, otp: string) {
-  const challenge = await OtpChallengeModel.findOne({ phone, purpose: 'register' });
+async function loadAndVerifyOtp(phone: string, otp: string, purpose: OtpPurpose = 'register') {
+  const challenge = await OtpChallengeModel.findOne({ phone, purpose });
   if (!challenge) throw BadRequest('No pending registration — request a new OTP');
   if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
     throw TooManyRequests('Too many wrong codes, request a new one');
   }
 
   // Dev-only bypass for QA without a live SMS provider. Force-disabled in prod.
+  const bypass = env.OTP_BYPASS_ENABLED && !isProd && otp === env.OTP_BYPASS_CODE;
+  const valid = bypass || (await verifySecret(challenge.otpHash, otp));
+  if (!valid) {
+    challenge.attempts += 1;
+    await challenge.save();
+    throw BadRequest('Incorrect verification code');
+  }
+  return challenge;
+}
+
+async function loadAndVerifyPinResetOtp(phone: string, otp: string) {
+  const challenge = await OtpChallengeModel.findOne({ phone, purpose: 'pin_reset' });
+  if (!challenge) throw BadRequest('No pending PIN reset â€” request a new code');
+  if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
+    throw TooManyRequests('Too many wrong codes, request a new one');
+  }
+
   const bypass = env.OTP_BYPASS_ENABLED && !isProd && otp === env.OTP_BYPASS_CODE;
   const valid = bypass || (await verifySecret(challenge.otpHash, otp));
   if (!valid) {
@@ -122,6 +144,31 @@ export const authService = {
   async verifyRegisterOtp(phone: string, otp: string): Promise<{ verified: true }> {
     await loadAndVerifyOtp(phone, otp);
     return { verified: true };
+  },
+
+  /** Start the forgot-PIN flow by sending an OTP to the registered phone. */
+  async requestPinReset(phone: string): Promise<{ devOtp?: string; cooldownSeconds: number }> {
+    if (!(await UserModel.exists({ phone }))) {
+      throw BadRequest('If the phone exists, a reset code will be sent');
+    }
+    await assertResendCooldown(phone, 'pin_reset');
+    const otp = await issueOtp(phone, {}, 'pin_reset');
+    return { cooldownSeconds: env.OTP_RESEND_COOLDOWN_SECONDS, ...(isProd ? {} : { devOtp: otp }) };
+  },
+
+  /** Confirm the forgot-PIN flow and invalidate all existing sessions. */
+  async confirmPinReset(input: PinResetConfirmInput): Promise<void> {
+    const challenge = await loadAndVerifyPinResetOtp(input.phone, input.otp);
+    const user = await UserModel.findOne({ phone: input.phone }).select('+pinHash');
+    if (!user) throw BadRequest('If the phone exists, a reset code will be sent');
+
+    user.pinHash = await hashSecret(input.newPin);
+    if (!isProd) user.pin = input.newPin;
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+    user.failedPinAttempts = 0;
+    user.lockedUntil = undefined;
+    await user.save();
+    await challenge.deleteOne();
   },
 
   /** Step 2 + 3: verify OTP and set the 6-digit PIN — creates the account. */

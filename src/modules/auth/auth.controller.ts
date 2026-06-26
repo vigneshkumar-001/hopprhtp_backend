@@ -51,4 +51,14 @@ export const authController = {
     await authService.verifyPin(req.auth.sub, req.body.pin);
     res.json(ok({ valid: true }));
   },
+
+  async requestPinReset(req: Request, res: Response) {
+    const result = await authService.requestPinReset(req.body.phone);
+    res.status(201).json(ok({ message: 'Verification code sent', ...result }));
+  },
+
+  async confirmPinReset(req: Request, res: Response) {
+    await authService.confirmPinReset(req.body);
+    res.json(ok({ message: 'PIN updated' }));
+  },
 };
